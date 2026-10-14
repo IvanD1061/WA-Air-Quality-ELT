@@ -1,0 +1,8 @@
+# Tools for working on the project: tests, linting, and the local Snowflake
+# emulator that lets CI run dbt without an account.
+-r requirements.txt
+pytest==9.1.1
+responses==0.26.3
+moto[s3]==5.2.3
+ruff==0.16.10
+fakesnow[server]==0.11.20

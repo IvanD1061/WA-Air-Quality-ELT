@@ -1,0 +1,30 @@
+# Secrets: the one section that must never be wrong.
+.env
+.env.*
+!.env.example
+secrets/*
+!secrets/.gitkeep
+*.p8
+*.pem
+*.pub
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# dbt
+dbt/target/
+dbt/dbt_packages/
+dbt/logs/
+dbt/.user.yml
+
+# Airflow
+logs/
+
+# OS and editors
+.DS_Store
+.idea/
+.vscode/

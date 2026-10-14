@@ -1,0 +1,9 @@
+# Everything the pipeline needs at run time: extract, load and dbt.
+# Installed into its own virtual environment inside the Airflow image, and
+# directly in CI. Versions are pinned so a build next month behaves like a
+# build today; bump them deliberately, one at a time.
+requests==2.34.2
+boto3==1.43.109
+snowflake-connector-python==4.8.0
+dbt-core==1.12.5
+dbt-snowflake==1.12.1
