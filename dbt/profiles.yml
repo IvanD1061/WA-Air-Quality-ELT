@@ -1,0 +1,49 @@
+# Connection settings for dbt. Safe to commit: every secret comes from an
+# environment variable (see .env.example), none is written here.
+#
+#   prod : what Airflow runs. Builds into STAGING and MARTS.
+#   dev  : for working on models by hand. Builds into DEV_STAGING and DEV_MARTS
+#          so experiments never overwrite what the dashboard reads.
+#   ci   : a local Snowflake emulator used by GitHub Actions. No account needed.
+
+air_quality:
+  target: "{{ env_var('DBT_TARGET', 'dev') }}"
+  outputs:
+    prod:
+      type: snowflake
+      account: "{{ env_var('SNOWFLAKE_ACCOUNT', '') }}"
+      user: "{{ env_var('SNOWFLAKE_USER', '') }}"
+      private_key_path: "{{ env_var('SNOWFLAKE_PRIVATE_KEY_PATH', '') }}"
+      private_key_passphrase: "{{ env_var('SNOWFLAKE_PRIVATE_KEY_PASSPHRASE', '') }}"
+      role: "{{ env_var('SNOWFLAKE_ROLE', 'ELT_ROLE') }}"
+      warehouse: "{{ env_var('SNOWFLAKE_WAREHOUSE', 'ELT_WH') }}"
+      database: "{{ env_var('SNOWFLAKE_DATABASE', 'AIR_QUALITY') }}"
+      schema: ANALYTICS
+      threads: 4
+      client_session_keep_alive: false
+
+    dev:
+      type: snowflake
+      account: "{{ env_var('SNOWFLAKE_ACCOUNT', '') }}"
+      user: "{{ env_var('SNOWFLAKE_USER', '') }}"
+      private_key_path: "{{ env_var('SNOWFLAKE_PRIVATE_KEY_PATH', '') }}"
+      private_key_passphrase: "{{ env_var('SNOWFLAKE_PRIVATE_KEY_PASSPHRASE', '') }}"
+      role: "{{ env_var('SNOWFLAKE_ROLE', 'ELT_ROLE') }}"
+      warehouse: "{{ env_var('SNOWFLAKE_WAREHOUSE', 'ELT_WH') }}"
+      database: "{{ env_var('SNOWFLAKE_DATABASE', 'AIR_QUALITY') }}"
+      schema: DEV
+      threads: 4
+      client_session_keep_alive: false
+
+    ci:
+      type: snowflake
+      account: fakesnow
+      user: fake
+      password: snow
+      host: "{{ env_var('EMULATOR_HOST', '127.0.0.1') }}"
+      port: "{{ env_var('EMULATOR_PORT', '8765') | int }}"
+      protocol: http
+      database: AIR_QUALITY
+      schema: CI
+      warehouse: ELT_WH
+      threads: 1

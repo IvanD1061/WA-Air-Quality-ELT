@@ -1,0 +1,45 @@
+name: air_quality
+version: "1.0.0"
+profile: air_quality
+require-dbt-version: [">=1.10.0", "<2.0.0"]
+
+model-paths: ["models"]
+seed-paths: ["seeds"]
+test-paths: ["tests"]
+macro-paths: ["macros"]
+clean-targets: ["target", "dbt_packages"]
+
+vars:
+  # An hour needs at least this share of its expected readings to count.
+  # 75% is the completeness rule the US EPA uses for its own averages.
+  min_coverage_pct: 75
+  # A day needs this many valid hours (75% of 24) before it gets an AQI.
+  min_valid_hours_per_day: 18
+  # OpenAQ's id for PM2.5 measured in µg/m³.
+  pm25_parameter_id: 2
+  dim_date_start: "2020-01-01"
+  # How new rows are folded into the incremental fact table. `merge` updates
+  # rows whose key already exists and inserts the rest. CI overrides this to
+  # delete+insert, which ends with the same rows, because the local emulator
+  # cannot run the MERGE statement dbt generates.
+  incremental_strategy: merge
+
+models:
+  air_quality:
+    staging:
+      # Views: no storage, always reflect the latest raw rows, and cheap to
+      # change while the cleaning rules are still settling.
+      +materialized: view
+      +schema: staging
+    intermediate:
+      +materialized: view
+      +schema: staging
+    marts:
+      # Tables: the dashboard reads these, so pay the compute once per run
+      # instead of once per chart.
+      +materialized: table
+      +schema: marts
+
+seeds:
+  air_quality:
+    +schema: staging
