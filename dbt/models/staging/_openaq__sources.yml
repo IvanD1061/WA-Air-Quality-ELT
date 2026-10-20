@@ -1,0 +1,45 @@
+version: 2
+
+sources:
+  - name: openaq
+    description: >
+      Raw OpenAQ v3 API records, loaded from S3 by `pipeline/load.py`. One row
+      per JSON record, stored whole in a VARIANT column.
+    database: "{{ target.database }}"
+    schema: RAW
+    config:
+      # Checked by `dbt source freshness`. The loader runs daily, so a day and
+      # a half without new rows is worth a warning and three days is a failure.
+      loaded_at_field: loaded_at
+      freshness:
+        warn_after: {count: 36, period: hour}
+        error_after: {count: 72, period: hour}
+
+    tables:
+      - name: locations
+        description: >
+          A full snapshot of every monitoring location in the bounding box,
+          one snapshot per run. `partition_date` is the snapshot date.
+        columns: &raw_columns
+          - name: raw_json
+            description: "Envelope written by the extractor. The API record is under `data`."
+            data_tests:
+              - not_null
+          - name: partition_date
+            description: "Date taken from the S3 folder name."
+            data_tests:
+              - not_null
+          - name: source_file
+            description: "S3 object the row was loaded from."
+          - name: source_row_number
+            description: "Line number of the row inside that file."
+          - name: loaded_at
+            description: "When the COPY that loaded the row started."
+            data_tests:
+              - not_null
+
+      - name: measurements
+        description: >
+          Hourly averages per sensor. `partition_date` is the UTC day the hour
+          starts in.
+        columns: *raw_columns
