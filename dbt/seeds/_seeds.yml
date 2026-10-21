@@ -1,0 +1,36 @@
+version: 2
+
+seeds:
+  - name: parameter_limits
+    description: >
+      Widest values each pollutant could plausibly take, keyed on OpenAQ's
+      parameter id. These are deliberately generous sanity bounds. Their job
+      is to catch "no data" codes and unit mix-ups, not to second-guess a real
+      wildfire spike. Tune them after profiling your own data.
+    config:
+      column_types:
+        min_plausible_value: float
+        max_plausible_value: float
+    columns:
+      - name: parameter_id
+        data_tests:
+          - unique
+          - not_null
+
+  - name: pm25_aqi_breakpoints
+    description: >
+      US EPA breakpoints for turning a 24-hour PM2.5 average (µg/m³) into an
+      Air Quality Index value and category, as revised in 2024.
+    config:
+      column_types:
+        concentration_low: number(6, 1)
+        concentration_high: number(6, 1)
+    columns:
+      - name: sort_order
+        data_tests:
+          - unique
+          - not_null
+      - name: aqi_category
+        data_tests:
+          - unique
+          - not_null

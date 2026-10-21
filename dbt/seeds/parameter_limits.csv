@@ -1,0 +1,7 @@
+parameter_id,parameter_name,units,min_plausible_value,max_plausible_value
+1,pm10,ug/m3,-10,5000
+2,pm25,ug/m3,-10,3000
+7,no2,ppm,-0.01,2
+8,co,ppm,-1,100
+9,so2,ppm,-0.01,2
+10,o3,ppm,-0.01,0.5
