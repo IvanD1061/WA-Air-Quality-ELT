@@ -1,0 +1,131 @@
+version: 2
+
+models:
+  - name: stg_openaq__locations
+    description: "One row per monitoring location, from the latest snapshot that contains it."
+    columns:
+      - name: location_id
+        description: "OpenAQ's id for the location."
+        data_tests:
+          - unique
+          - not_null
+      - name: location_name
+        description: "Station name. Null when the source has none."
+      - name: timezone
+        description: "IANA time zone of the station, e.g. America/Los_Angeles."
+      - name: is_monitor
+        description: "True for reference-grade government monitors, false for low-cost sensors."
+      - name: latitude
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: -90
+                max_value: 90
+              config:
+                severity: warn
+      - name: longitude
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: -180
+                max_value: 180
+              config:
+                severity: warn
+
+  - name: stg_openaq__sensors
+    description: "One row per sensor, flattened out of the location records."
+    columns:
+      - name: sensor_id
+        data_tests:
+          - unique
+          - not_null
+      - name: location_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_openaq__locations')
+                field: location_id
+      - name: parameter_id
+        data_tests:
+          - not_null
+
+  - name: stg_openaq__measurements
+    description: "One row per sensor per hour: typed, de-duplicated, values not yet judged."
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [sensor_id, measured_at_utc]
+    columns:
+      - name: sensor_id
+        data_tests:
+          - not_null
+      - name: measured_at_utc
+        description: "Start of the hour the reading covers, in UTC."
+        data_tests:
+          - not_null
+      - name: measured_at_local
+        description: "The same moment on the station's own clock."
+        data_tests:
+          - not_null
+      - name: value
+        description: "Hourly mean. Can be null, negative or absurd; see int_measurements__validated."
+      - name: percent_complete
+        description: "Share of the readings expected in the hour that actually arrived."
+
+  - name: int_measurements__validated
+    description: >
+      Staged measurements plus a verdict on each one. Rows are never dropped
+      for having a bad value; they are labelled so later models can exclude
+      them and so data quality itself can be reported.
+    columns:
+      - name: quality_status
+        description: "Why the reading is or is not trusted. The first failing check wins."
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values:
+                  - valid
+                  - missing_value
+                  - below_plausible_range
+                  - above_plausible_range
+                  - provider_flagged
+                  - low_coverage
+      - name: is_valid
+        description: "True when quality_status is 'valid'."
+        data_tests:
+          - not_null
+
+unit_tests:
+  - name: quality_status_first_failing_check_wins
+    description: >
+      One row per rule, plus edge cases: a small negative is instrument noise
+      and stays valid, and a pollutant with no limits skips the range checks.
+    model: int_measurements__validated
+    given:
+      - input: ref('stg_openaq__measurements')
+        rows:
+          - {sensor_id: 1, parameter_id: 2, value: 12.5, has_provider_flags: false, percent_complete: 100}
+          - {sensor_id: 2, parameter_id: 2, value: null, has_provider_flags: false, percent_complete: 100}
+          - {sensor_id: 3, parameter_id: 2, value: -999, has_provider_flags: false, percent_complete: 100}
+          - {sensor_id: 4, parameter_id: 2, value: -2, has_provider_flags: false, percent_complete: 100}
+          - {sensor_id: 5, parameter_id: 2, value: 99999, has_provider_flags: false, percent_complete: 100}
+          - {sensor_id: 6, parameter_id: 2, value: 12.5, has_provider_flags: true, percent_complete: 100}
+          - {sensor_id: 7, parameter_id: 2, value: 12.5, has_provider_flags: false, percent_complete: 50}
+          - {sensor_id: 8, parameter_id: 100, value: -15, has_provider_flags: false, percent_complete: 100}
+          - {sensor_id: 9, parameter_id: 2, value: -999, has_provider_flags: true, percent_complete: 10}
+      - input: ref('parameter_limits')
+        rows:
+          - {parameter_id: 2, min_plausible_value: -10, max_plausible_value: 3000}
+    expect:
+      rows:
+        - {sensor_id: 1, quality_status: valid, is_valid: true}
+        - {sensor_id: 2, quality_status: missing_value, is_valid: false}
+        - {sensor_id: 3, quality_status: below_plausible_range, is_valid: false}
+        - {sensor_id: 4, quality_status: valid, is_valid: true}
+        - {sensor_id: 5, quality_status: above_plausible_range, is_valid: false}
+        - {sensor_id: 6, quality_status: provider_flagged, is_valid: false}
+        - {sensor_id: 7, quality_status: low_coverage, is_valid: false}
+        - {sensor_id: 8, quality_status: valid, is_valid: true}
+        - {sensor_id: 9, quality_status: below_plausible_range, is_valid: false}
