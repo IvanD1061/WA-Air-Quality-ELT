@@ -1,0 +1,253 @@
+version: 2
+
+models:
+  - name: dim_location
+    description: "Dimension: where a measurement was taken. One row per monitoring location."
+    columns:
+      - name: location_key
+        description: "Surrogate key: a hash of location_id."
+        data_tests:
+          - unique
+          - not_null
+      - name: location_id
+        description: "OpenAQ's own id, kept for tracing back to the source."
+        data_tests:
+          - unique
+          - not_null
+      - name: location_name
+        description: "Station name, or 'Unnamed location <id>' when the source has none."
+        data_tests:
+          - not_null
+      - name: station_type
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ["Reference monitor", "Low-cost sensor"]
+      - name: timezone
+        data_tests:
+          - not_null:
+              config:
+                severity: warn
+
+  - name: dim_parameter
+    description: "Dimension: what was measured. One row per pollutant and unit."
+    columns:
+      - name: parameter_key
+        description: "Surrogate key: a hash of parameter_id."
+        data_tests:
+          - unique
+          - not_null
+      - name: parameter_id
+        data_tests:
+          - unique
+          - not_null
+      - name: parameter_name
+        data_tests:
+          - not_null
+      - name: units
+        data_tests:
+          - not_null
+
+  - name: dim_date
+    description: "Dimension: one row per calendar day, including days with no data."
+    columns:
+      - name: date_key
+        description: "The date as an integer, YYYYMMDD."
+        data_tests:
+          - unique
+          - not_null
+      - name: date_day
+        data_tests:
+          - unique
+          - not_null
+
+  - name: fct_measurements_hourly
+    description: >
+      Fact table. Grain: one row per sensor per hour. Holds every reading,
+      trusted or not, with a quality_status that says which.
+    data_tests:
+      # The data itself should be recent, not just the load. A warning rather
+      # than a failure because a quiet API day should not block the run.
+      - dbt_utils.recency:
+          arguments:
+            datepart: hour
+            field: measured_at_utc
+            interval: 72
+          config:
+            severity: warn
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "hour_of_day_local between 0 and 23"
+      - dbt_utils.expression_is_true:
+          name: valid_measurements_have_a_value
+          arguments:
+            expression: "value is not null"
+          config:
+            where: "is_valid"
+    columns:
+      - name: measurement_key
+        description: "Surrogate key: a hash of sensor_id and measured_at_utc."
+        data_tests:
+          - unique
+          - not_null
+      - name: location_key
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_location')
+                field: location_key
+      - name: parameter_key
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_parameter')
+                field: parameter_key
+      - name: date_key
+        description: "Local calendar day of the reading. Joins to dim_date."
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_date')
+                field: date_key
+      - name: sensor_id
+        description: "Degenerate dimension: the instrument that took the reading."
+        data_tests:
+          - not_null
+      - name: measured_at_utc
+        data_tests:
+          - not_null
+      - name: value
+        description: "Hourly mean in the parameter's unit. Use only where is_valid."
+      - name: percent_complete
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 100
+              config:
+                severity: warn
+      - name: quality_status
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values:
+                  - valid
+                  - missing_value
+                  - below_plausible_range
+                  - above_plausible_range
+                  - provider_flagged
+                  - low_coverage
+      - name: is_valid
+        data_tests:
+          - not_null
+
+  - name: fct_air_quality_daily
+    description: >
+      Aggregate fact. Grain: one row per location per pollutant per local day,
+      averaged over valid hours only. This is what the dashboard reads.
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [location_key, parameter_key, date_key]
+      - dbt_utils.expression_is_true:
+          name: daily_min_avg_max_are_ordered
+          arguments:
+            expression: "min_value <= avg_value and avg_value <= max_value"
+      - dbt_utils.expression_is_true:
+          name: aqi_only_on_complete_days
+          arguments:
+            expression: "is_complete_day"
+          config:
+            where: "aqi_value is not null"
+    columns:
+      - name: daily_key
+        data_tests:
+          - unique
+          - not_null
+      - name: location_key
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_location')
+                field: location_key
+      - name: parameter_key
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_parameter')
+                field: parameter_key
+      - name: date_key
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_date')
+                field: date_key
+      - name: valid_hours
+        description: "Hours with a trusted reading. Up to 25 on the day clocks go back."
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 1
+                max_value: 25
+      - name: aqi_value
+        description: "US EPA AQI computed from the daily PM2.5 mean. Null for other pollutants."
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 500
+      - name: aqi_category
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('pm25_aqi_breakpoints')
+                field: aqi_category
+
+unit_tests:
+  - name: daily_aqi_follows_epa_breakpoints
+    description: >
+      Checks the band edges (9.0 is Good, 9.1 is Moderate), the interpolation,
+      the cap at 500, and that incomplete days and other pollutants get no AQI.
+    model: fct_air_quality_daily
+    overrides:
+      vars:
+        min_valid_hours_per_day: 1
+    given:
+      - input: ref('fct_measurements_hourly')
+        rows:
+          - {location_key: a, parameter_key: pm25, date_key: 20261001, measured_at_utc: "2026-10-01 08:00:00", value: 9.0, is_valid: true}
+          - {location_key: a, parameter_key: pm25, date_key: 20261002, measured_at_utc: "2026-10-02 08:00:00", value: 9.1, is_valid: true}
+          - {location_key: a, parameter_key: pm25, date_key: 20261003, measured_at_utc: "2026-10-03 08:00:00", value: 35.4, is_valid: true}
+          - {location_key: a, parameter_key: pm25, date_key: 20261004, measured_at_utc: "2026-10-04 08:00:00", value: 800, is_valid: true}
+          - {location_key: a, parameter_key: pm25, date_key: 20261005, measured_at_utc: "2026-10-05 08:00:00", value: -2, is_valid: true}
+          # Two sensors in the same hour count as one hour, averaged: (10 + 20) / 2 = 15
+          - {location_key: a, parameter_key: pm25, date_key: 20261006, measured_at_utc: "2026-10-06 08:00:00", value: 10, is_valid: true}
+          - {location_key: a, parameter_key: pm25, date_key: 20261006, measured_at_utc: "2026-10-06 08:00:00", value: 20, is_valid: true}
+          # Invalid readings are ignored entirely
+          - {location_key: a, parameter_key: pm25, date_key: 20261006, measured_at_utc: "2026-10-06 09:00:00", value: 99999, is_valid: false}
+          - {location_key: a, parameter_key: o3, date_key: 20261001, measured_at_utc: "2026-10-01 08:00:00", value: 0.04, is_valid: true}
+      - input: ref('dim_parameter')
+        rows:
+          - {parameter_key: pm25, parameter_id: 2}
+          - {parameter_key: o3, parameter_id: 10}
+      - input: ref('pm25_aqi_breakpoints')
+        rows:
+          - {sort_order: 1, aqi_category: Good, concentration_low: 0.0, concentration_high: 9.0, aqi_low: 0, aqi_high: 50}
+          - {sort_order: 2, aqi_category: Moderate, concentration_low: 9.1, concentration_high: 35.4, aqi_low: 51, aqi_high: 100}
+          - {sort_order: 6, aqi_category: Hazardous, concentration_low: 225.5, concentration_high: 325.4, aqi_low: 301, aqi_high: 500}
+    expect:
+      rows:
+        - {parameter_key: pm25, date_key: 20261001, valid_hours: 1, aqi_value: 50, aqi_category: Good}
+        - {parameter_key: pm25, date_key: 20261002, valid_hours: 1, aqi_value: 51, aqi_category: Moderate}
+        - {parameter_key: pm25, date_key: 20261003, valid_hours: 1, aqi_value: 100, aqi_category: Moderate}
+        - {parameter_key: pm25, date_key: 20261004, valid_hours: 1, aqi_value: 500, aqi_category: Hazardous}
+        - {parameter_key: pm25, date_key: 20261005, valid_hours: 1, aqi_value: 0, aqi_category: Good}
+        - {parameter_key: pm25, date_key: 20261006, valid_hours: 1, aqi_value: 62, aqi_category: Moderate}
+        - {parameter_key: o3, date_key: 20261001, valid_hours: 1, aqi_value: null, aqi_category: null}
