@@ -1,0 +1,154 @@
+# Local stack: Airflow 3 (LocalExecutor) + Postgres for its metadata + the
+# Streamlit dashboard. Adapted from the official Airflow compose file, with
+# Celery, Redis and the triggerer removed: one machine running one daily DAG
+# needs none of them.
+#
+#   make up      build and start everything
+#   make down    stop it (add `-v` by hand to also wipe Airflow's database)
+#
+# Snowflake and S3 are cloud services and are NOT in here; the containers
+# reach them with the credentials in .env.
+
+x-airflow-common: &airflow-common
+  build: .
+  image: wa-air-quality-airflow:local
+  env_file:
+    - .env
+  environment: &airflow-common-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+    AIRFLOW__CORE__FERNET_KEY: ""
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    # In Airflow 3, tasks talk to the API server instead of the database.
+    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: "http://airflow-apiserver:8080/execution/"
+    AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_JWT_SECRET:-local-development-only-not-a-real-secret}
+    AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
+    # Pipeline settings that differ inside the container. Anything set here
+    # wins over the same name in .env.
+    DBT_TARGET: prod
+    DBT_PROFILES_DIR: /opt/project/dbt
+    SNOWFLAKE_PRIVATE_KEY_PATH: /opt/project/secrets/snowflake_rsa_key.p8
+  volumes:
+    # DAGs are mounted so edits show up without a rebuild. Pipeline and dbt
+    # code is baked into the image; `make up` rebuilds it when it changes.
+    - ./dags:/opt/airflow/dags
+    - ./logs:/opt/airflow/logs
+    - ./secrets:/opt/project/secrets:ro
+  user: "${AIRFLOW_UID:-50000}:0"
+  depends_on: &airflow-common-depends-on
+    postgres:
+      condition: service_healthy
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - airflow-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 10s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+
+  # Runs once: creates Airflow's tables and the login user, then exits.
+  airflow-init:
+    <<: *airflow-common
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        mkdir -p /opt/airflow/logs /opt/airflow/dags
+        chown -R "${AIRFLOW_UID:-50000}:0" /opt/airflow/logs
+        exec /entrypoint airflow version
+    environment:
+      <<: *airflow-common-env
+      _AIRFLOW_DB_MIGRATE: "true"
+      _AIRFLOW_WWW_USER_CREATE: "true"
+      _AIRFLOW_WWW_USER_USERNAME: ${AIRFLOW_ADMIN_USER:-airflow}
+      _AIRFLOW_WWW_USER_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD:-airflow}
+    user: "0:0"
+
+  airflow-apiserver:
+    <<: *airflow-common
+    command: api-server
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/api/v2/monitor/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type SchedulerJob --hostname "$${HOSTNAME}"']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-dag-processor:
+    <<: *airflow-common
+    command: dag-processor
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type DagProcessorJob --hostname "$${HOSTNAME}"']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  # One-off commands in the same image: `make extract`, `make dbt-build`, ...
+  # Only started when asked for, never by `make up`.
+  pipeline:
+    <<: *airflow-common
+    profiles: ["tools"]
+    entrypoint: ["/bin/bash", "-c"]
+    working_dir: /opt/project
+    depends_on: {}
+
+  dashboard:
+    build: ./dashboard
+    image: wa-air-quality-dashboard:local
+    # Only the Snowflake settings are passed in, read from .env. The dashboard
+    # has no use for the AWS or OpenAQ keys, so it never receives them.
+    environment:
+      SNOWFLAKE_ACCOUNT: ${SNOWFLAKE_ACCOUNT:-}
+      SNOWFLAKE_USER: ${SNOWFLAKE_USER:-}
+      SNOWFLAKE_WAREHOUSE: ${SNOWFLAKE_WAREHOUSE:-ELT_WH}
+      SNOWFLAKE_DATABASE: ${SNOWFLAKE_DATABASE:-AIR_QUALITY}
+      SNOWFLAKE_PRIVATE_KEY_PATH: /app/secrets/snowflake_rsa_key.p8
+      DASHBOARD_ROLE: ${DASHBOARD_ROLE:-REPORTER}
+      DASHBOARD_SCHEMA: ${DASHBOARD_SCHEMA:-MARTS}
+    volumes:
+      - ./secrets:/app/secrets:ro
+    ports:
+      - "8501:8501"
+    restart: unless-stopped
+
+volumes:
+  airflow-db:
