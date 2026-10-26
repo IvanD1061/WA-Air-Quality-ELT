@@ -1,0 +1,19 @@
+# Keep secrets and local clutter out of the image.
+.git
+.github
+.env
+.env.*
+!.env.example
+secrets
+logs
+docs
+tests
+dashboard
+.venv
+**/__pycache__
+**/*.pyc
+.pytest_cache
+.ruff_cache
+dbt/target
+dbt/logs
+dbt/dbt_packages
